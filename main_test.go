@@ -54,7 +54,11 @@ func TestSDKTimeout(t *testing.T) {
 }
 
 func TestFlagDefaultsWhenClientNil(t *testing.T) {
+	prevClient := ldClient
 	ldClient = nil
+	defer func() {
+		ldClient = prevClient
+	}()
 	flags := getFlagValues(ldcontext.New("sample-user"))
 
 	if flags.BannerText != defaultBannerText {
@@ -72,6 +76,7 @@ func TestFlagDefaultsWhenClientNil(t *testing.T) {
 }
 
 func TestFlagValuesWithTestData(t *testing.T) {
+	prevClient := ldClient
 	testData := ldtestdata.DataSource()
 	testData.Update(testData.Flag("enable-gpt-511-codex-max").VariationForAll(false))
 	testData.Update(testData.Flag("enable-credit-card").VariationForAll(false))
@@ -99,7 +104,7 @@ func TestFlagValuesWithTestData(t *testing.T) {
 
 	ldClient = client
 	defer func() {
-		ldClient = nil
+		ldClient = prevClient
 	}()
 
 	flags := getFlagValues(ldcontext.New("tester"))

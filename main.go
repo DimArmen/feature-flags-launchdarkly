@@ -138,7 +138,6 @@ func main() {
 		ldClient, err = ld.MakeCustomClient(sdkKey, config, 5*time.Second)
 		if err != nil {
 			log.Printf("failed to initialize LaunchDarkly SDK, falling back to defaults: %v", err)
-			ldClient = nil
 		} else {
 			defer ldClient.Close()
 		}
