@@ -9,16 +9,123 @@ import (
 	"time"
 
 	"github.com/launchdarkly/go-sdk-common/v3/ldcontext"
+	"github.com/launchdarkly/go-sdk-common/v3/ldvalue"
 	ld "github.com/launchdarkly/go-server-sdk/v7"
 	"github.com/launchdarkly/go-server-sdk/v7/ldcomponents"
 )
 
 var ldClient *ld.LDClient
 
+const (
+	defaultBannerText   = "Welcome back!"
+	defaultTierLabel    = "Standard"
+	defaultMaxCartItems = 5
+)
+
+type featureFlags struct {
+	GPTEnabled        bool
+	CreditCardEnabled bool
+	PaypalEnabled     bool
+	ApplePayEnabled   bool
+	BannerText        string
+	TierLabel         string
+	MaxCartItems      int
+	RecommendedPlan   ldvalue.Value
+}
+
+func getFlagValues(user ldcontext.Context) featureFlags {
+	return featureFlags{
+		GPTEnabled:        boolVariation("enable-gpt-511-codex-max", user, true),
+		CreditCardEnabled: boolVariation("enable-credit-card", user, true),
+		PaypalEnabled:     boolVariation("enable-paypal", user, true),
+		ApplePayEnabled:   boolVariation("enable-apple-pay", user, false),
+		BannerText:        stringVariation("checkout-banner-text", user, defaultBannerText),
+		TierLabel:         stringVariation("user-tier-label", user, defaultTierLabel),
+		MaxCartItems:      intVariation("max-items-in-cart", user, defaultMaxCartItems),
+		RecommendedPlan:   jsonVariation("recommended-plan", user, defaultPlanValue()),
+	}
+}
+
+func boolVariation(name string, user ldcontext.Context, defaultValue bool) bool {
+	if ldClient == nil {
+		return defaultValue
+	}
+
+	value, err := ldClient.BoolVariation(name, user, defaultValue)
+	if err != nil {
+		return defaultValue
+	}
+
+	return value
+}
+
+func stringVariation(name string, user ldcontext.Context, defaultValue string) string {
+	if ldClient == nil {
+		return defaultValue
+	}
+
+	value, err := ldClient.StringVariation(name, user, defaultValue)
+	if err != nil {
+		return defaultValue
+	}
+
+	return value
+}
+
+func intVariation(name string, user ldcontext.Context, defaultValue int) int {
+	if ldClient == nil {
+		return defaultValue
+	}
+
+	value, err := ldClient.IntVariation(name, user, defaultValue)
+	if err != nil {
+		return defaultValue
+	}
+
+	return value
+}
+
+func jsonVariation(name string, user ldcontext.Context, defaultValue ldvalue.Value) ldvalue.Value {
+	if ldClient == nil {
+		return defaultValue
+	}
+
+	value, err := ldClient.JSONVariation(name, user, defaultValue)
+	if err != nil {
+		return defaultValue
+	}
+
+	return value
+}
+
+func defaultPlanValue() ldvalue.Value {
+	return ldvalue.ObjectBuild().
+		Set("name", ldvalue.String("Starter")).
+		Set("price", ldvalue.Int(9)).
+		Set("perk", ldvalue.String("Basic coverage + chat support")).
+		Build()
+}
+
+func formatPlan(plan ldvalue.Value) string {
+	name := plan.GetByKey("name").StringValue()
+	price := plan.GetByKey("price").IntValue()
+	perk := plan.GetByKey("perk").StringValue()
+
+	if name == "" {
+		name = "Starter"
+	}
+
+	if perk == "" {
+		perk = "No perks configured"
+	}
+
+	return fmt.Sprintf("%s plan • $%d/mo • %s", name, price, perk)
+}
+
 func main() {
 	sdkKey := os.Getenv("LAUNCHDARKLY_SDK_KEY")
 	if sdkKey == "" {
-		log.Fatal("set LAUNCHDARKLY_SDK_KEY to your SDK key")
+		log.Println("LAUNCHDARKLY_SDK_KEY not set. Running with default flag values only.")
 	}
 
 	// Initialize LaunchDarkly client
@@ -27,14 +134,18 @@ func main() {
 	}
 
 	var err error
-	ldClient, err = ld.MakeCustomClient(sdkKey, config, 5*time.Second)
-	if err != nil {
-		log.Fatalf("failed to initialize LaunchDarkly SDK: %v", err)
+	if sdkKey != "" {
+		ldClient, err = ld.MakeCustomClient(sdkKey, config, 5*time.Second)
+		if err != nil {
+			log.Printf("failed to initialize LaunchDarkly SDK, falling back to defaults: %v", err)
+			ldClient = nil
+		} else {
+			defer ldClient.Close()
+		}
 	}
-	defer ldClient.Close()
 
 	// Wait for the client to initialize
-	if !ldClient.Initialized() {
+	if ldClient != nil && !ldClient.Initialized() {
 		log.Println("Warning: LaunchDarkly client did not initialize. Using default values.")
 	}
 
@@ -61,17 +172,13 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	// Create a user context for flag evaluation
 	user := ldcontext.New(userID)
 
-	// Check feature flags
-	gptEnabled, _ := ldClient.BoolVariation("enable-gpt-511-codex-max", user, true)
-	creditCardEnabled, _ := ldClient.BoolVariation("enable-credit-card", user, true)
-	paypalEnabled, _ := ldClient.BoolVariation("enable-paypal", user, true)
-	applePayEnabled, _ := ldClient.BoolVariation("enable-apple-pay", user, false)
+	flags := getFlagValues(user)
 
 	_ = ctx // unused for now
 
 	gptStatus := "DISABLED"
 	gptColor := "red"
-	if gptEnabled {
+	if flags.GPTEnabled {
 		gptStatus = "ENABLED"
 		gptColor = "green"
 	}
@@ -97,6 +204,9 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		.refresh { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 4px; }
 		.refresh:hover { background: #0b7dda; }
 		.provider { color: #999; font-size: 12px; margin-top: 10px; }
+		.flag-list { list-style: none; padding: 0; margin: 0; }
+		.flag-list li { margin: 6px 0; color: #333; }
+		.flag-name { color: #777; font-size: 12px; margin-left: 6px; }
 	</style></head><body>
 	<div class="container">
 		<div class="user-info">
@@ -111,10 +221,10 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		
 		<h2>Available Payment Methods</h2>
 		<div class="payment-methods">`, userID, gptColor,
-		map[bool]string{true: "✓", false: "✗"}[gptEnabled],
+		map[bool]string{true: "✓", false: "✗"}[flags.GPTEnabled],
 		gptStatus)
 
-	if creditCardEnabled {
+	if flags.CreditCardEnabled {
 		fmt.Fprintf(w, `
 			<div class="payment-box">
 				<h3>💳 Credit Card</h3>
@@ -122,7 +232,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 			</div>`)
 	}
 
-	if paypalEnabled {
+	if flags.PaypalEnabled {
 		fmt.Fprintf(w, `
 			<div class="payment-box">
 				<h3>🅿️ PayPal</h3>
@@ -130,7 +240,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 			</div>`)
 	}
 
-	if applePayEnabled {
+	if flags.ApplePayEnabled {
 		fmt.Fprintf(w, `
 			<div class="payment-box">
 				<h3>🍎 Apple Pay</h3>
@@ -140,7 +250,16 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Fprintf(w, `
 		</div>
+		<div class="status">
+			<h2>Personalized Checkout Experience</h2>
+			<ul class="flag-list">
+				<li><strong>Banner message:</strong> %s <span class="flag-name">(flag: checkout-banner-text)</span></li>
+				<li><strong>User tier:</strong> %s <span class="flag-name">(flag: user-tier-label)</span></li>
+				<li><strong>Max items in cart:</strong> %d <span class="flag-name">(flag: max-items-in-cart)</span></li>
+				<li><strong>Recommended plan:</strong> %s <span class="flag-name">(flag: recommended-plan)</span></li>
+			</ul>
+		</div>
 		<a href="/" class="refresh">Refresh Page</a>
 	</div>
-	</body></html>`)
+	</body></html>`, flags.BannerText, flags.TierLabel, flags.MaxCartItems, formatPlan(flags.RecommendedPlan))
 }
